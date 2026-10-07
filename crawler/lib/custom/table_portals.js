@@ -184,6 +184,36 @@ const FETCHERS = {
       }
     }
     return { jobs, officialTotal };
+  },
+  // SuccessFactors Jobs2Web 招聘站：/services/jobs/search/ 公开JSON列表（按官网地点搜索+国家代码核对）+ 官方职位页正文。
+  async sf_rmk(site, http, { text } = {}) {
+    const { origin, locationsearch, country } = site.sf || {};
+    if (!origin || !locationsearch || !country) throw new Error('SF config incomplete');
+    const fetchText = text || (async url => { const r = await fetch(url, { headers: { Accept: 'text/html' }, signal: AbortSignal.timeout(TIMEOUT_MS) }); if (r.status !== 200) throw new Error('HTTP ' + r.status + ' ' + url); return r.text(); });
+    const rows = [];
+    for (let startrow = 0; startrow < 5000; startrow += 50) {
+      const data = await http(origin + '/services/jobs/search/', { method: 'POST', headers: { Referer: origin + '/' }, json: { page: 0, keywords: '', locationsearch, sortby: 'referencedate', sortdir: 'desc', sortfield: 'title', recordsperpage: 50, startrow, facetquery: { facet: false } } });
+      if (!Array.isArray(data?.jobList)) throw new Error('SF list shape changed');
+      rows.push(...data.jobList);
+      if (data.jobList.length < 50) break;
+    }
+    const mine = rows.filter(r => String(r.country).toUpperCase() === country);
+    const jobs = [];
+    for (const row of mine) {
+      const url = `${origin}/job/${row.urltitle}/${row.id}/`;
+      await new Promise(resolve => setTimeout(resolve, DELAY_MS));
+      const html = await fetchText(url);
+      const start = html.indexOf('<span class="jobdescription">');
+      if (start < 0) throw new Error('SF job page shape changed: ' + row.id);
+      let depth = 0, end = -1;
+      for (const m of html.slice(start).matchAll(/<(\/?)span\b[^>]*>/g)) { depth += m[1] ? -1 : 1; if (depth === 0) { end = start + m.index + m[0].length; break; } }
+      if (end < 0) throw new Error('SF job description unterminated: ' + row.id);
+      jobs.push(job({
+        id: row.id, title: row.title, city: [row.city, row.state].filter(Boolean).join(', ') || row.location, category: row.department,
+        channels: [], employment: null, url, description: htmlText(html.slice(start, end))
+      }));
+    }
+    return { jobs, officialTotal: mine.length };
   }
 };
 

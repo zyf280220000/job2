@@ -25,7 +25,7 @@ function loadSites() {
 
 function coverageFor(site) {
   // Include original scope parameters/descriptions, not a claim of whole-company coverage.
-  const keys = ['key', 'ats', 'orgId', 'siteId', 'site', 'api', 'apiOrigin', 'url', 'category', 'track', 'batch', 'body', 'origin', 'detailApi', 'headers', 'aid', 'websitePath', 'subjectIdList', 'plain', 'matchKeyword', 'note', 'fetchDetails', 'listJD', 'adapter', 'fetcher', 'workday', 'wecruit', 'portalType', 'portalPaths', 'categoryRootIds', 'categoryGroups', 'categoryTreeHash'];
+  const keys = ['key', 'ats', 'orgId', 'siteId', 'site', 'api', 'apiOrigin', 'url', 'category', 'track', 'batch', 'body', 'origin', 'detailApi', 'headers', 'aid', 'websitePath', 'subjectIdList', 'plain', 'matchKeyword', 'note', 'fetchDetails', 'listJD', 'adapter', 'fetcher', 'workday', 'wecruit', 'sf', 'portalType', 'portalPaths', 'categoryRootIds', 'categoryGroups', 'categoryTreeHash'];
   if (site.ats === 'moka') keys.push('linkTemplate');
   const scope = {};
   for (const key of keys.sort()) if (site[key] !== undefined) scope[key] = site[key];

@@ -81,6 +81,8 @@ UUID Id与数字JobAdId是不同字段；全源双唯一性在投影前也复验
 
 `custom/xiaomi_portal.js`仅接入已核HR `type=2`校招无筛选全集（含campus/futurestar/toptalent/newretailing链接），不沿用旧“2027届/排顶尖”过滤；社会/type=3/4不继承资格。正常匿名Node原生UA、200ms/15s、200页保护/40分钟有界子进程，双完整列表逐页原生total/页长、三独立身份、越界空EOF及全部13字段稳定；每轮全部必要详情以正常匿名GET、官网真实公开website-path/中文语言/Referer取得（无注入签名/SDK；缺website-path会静默丢课题字段，不能只看code0），身份/两栏与列表绑定、完整raw双稳，证据穿透crawl/publisher复验，未证有效零拒绝。官网React TEXT的description/requirement保全部空白/实体字面/同文重复；详情已证额外“课题名称及内容”按真实标题/顺序补入完整description，不添第四评分字段，未知额外JD拒整源。列表没有该额外字段，不能当完整JD；初版列表-only候选撤销，非旧成功保留。聚合接口未提供的职能/性质/计划/状态及日期保持未知，校园城市原数组顺序仍严格比较。首次完整通过且本地页面验收后才发布。
 
+**table_portals（表格公司共享入口）**：`lib/custom/table_portals.js`以`adapter:"table-portal-v1"`+`fetcher`登记自建站官方公开接口（美的、亚马逊中国区，及可配置的`workday`/`wecruit`/`sf_rmk`通用fetcher），匿名Node、串行>=200ms、15s超时，输出已规范岗位并记录官方total与实际唯一数量；未登记fetcher不运行。北森`*.zhiye.com`与Moka新门户也可直接按`ats`通用路径登记（Moka需列表缺JD时设`fetchDetails:true`），这类来源`jdComplete`保守为false；变更来源的覆盖字段后须重新采集，已发布覆盖变化会被publisher拒绝。
+
 部分 custom 需要 Chrome/CDP，历史路径偏 Windows、`CHROME_PATH` 支持也尚不统一。不要假定这轮整理已经解决各来源运行环境。
 
 ## 发布数据契约
