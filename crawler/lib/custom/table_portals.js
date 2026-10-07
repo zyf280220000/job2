@@ -98,6 +98,92 @@ const FETCHERS = {
       if (page >= data.info?.totalPage || !data.data.length) break;
     }
     return { jobs, officialTotal };
+  },
+  // 亚马逊官方招聘站（amazon.jobs）公开search.json，按官网国家筛选China（normalized_country_code=CHN），列表自带完整正文。
+  async amazon_cn(site, http) {
+    const jobs = [];
+    let officialTotal;
+    for (let offset = 0; offset < 20000; offset += 100) {
+      const data = await http('https://www.amazon.jobs/en/search.json?result_limit=100&sort=recent&normalized_country_code%5B%5D=CHN&offset=' + offset);
+      if (!Array.isArray(data?.jobs) || !Number.isSafeInteger(data.hits)) throw new Error('Amazon search shape changed');
+      officialTotal = data.hits;
+      for (const item of data.jobs) {
+        jobs.push(job({
+          id: item.id_icims || item.id, title: item.title,
+          city: [item.normalized_location || [item.city, item.state, item.country_code].filter(Boolean).join(', ')].join(''),
+          category: item.job_category, channels: [], employment: item.is_intern === true || item.is_intern === 'true' ? 'internship' : null,
+          url: 'https://www.amazon.jobs' + item.job_path,
+          duty: htmlText(item.description), requirements: htmlText([item.basic_qualifications, item.preferred_qualifications].filter(Boolean).join('<br/><br/>'))
+        }));
+      }
+      if (offset + data.jobs.length >= data.hits || !data.jobs.length) break;
+    }
+    return { jobs, officialTotal };
+  },
+  // Workday 公开 cxs 接口：按官网国家 facet 筛选，列表分页后逐岗取官方详情（职位描述HTML）。
+  async workday(site, http) {
+    const { host, tenant, careerSite, country } = site.workday || {};
+    if (!host || !tenant || !careerSite || !country) throw new Error('Workday config incomplete');
+    const api = `https://${host}/wday/cxs/${tenant}/${careerSite}`;
+    const search = (offset, applied, limit = 20) => http(api + '/jobs', { method: 'POST', json: { appliedFacets: applied, limit, offset, searchText: '' } });
+    const probe = await search(0, {}, 1);
+    const facet = (probe.facets || []).find(f => /country/i.test(f.facetParameter + ' ' + f.descriptor));
+    const china = (facet?.values || []).find(v => new RegExp('^' + country, 'i').test(v.descriptor));
+    if (!facet || !china) throw new Error('Workday country facet not found: ' + country);
+    const applied = { [facet.facetParameter]: [china.id] };
+    const postings = [];
+    let officialTotal;
+    for (let offset = 0; offset < 20000; offset += 20) {
+      const data = await search(offset, applied);
+      if (!Array.isArray(data?.jobPostings) || !Number.isSafeInteger(data.total)) throw new Error('Workday list shape changed');
+      if (offset === 0) officialTotal = data.total;
+      postings.push(...data.jobPostings);
+      if (!data.jobPostings.length || postings.length >= officialTotal) break;
+    }
+    const jobs = [];
+    for (const posting of postings) {
+      if (!posting.externalPath) continue;
+      const detail = (await http(api + posting.externalPath))?.jobPostingInfo;
+      if (!detail || typeof detail.jobDescription !== 'string') throw new Error('Workday detail shape changed: ' + posting.externalPath);
+      jobs.push(job({
+        id: detail.jobReqId || posting.bulletFields?.[0] || posting.externalPath, title: detail.title || posting.title,
+        city: detail.location || posting.locationsText, category: '', channels: [], employment: /intern/i.test(detail.timeType || '') ? 'internship' : /full/i.test(detail.timeType || '') ? 'full-time' : null,
+        url: detail.externalUrl || `https://${host}/en-US/${careerSite}${posting.externalPath}`, description: htmlText(detail.jobDescription)
+      }));
+    }
+    return { jobs, officialTotal };
+  },
+  // 中智Wecruit（*.hotjob.cn）官方公开接口：listPosition分页（官网固定每页12）+ listPositionDetail取职责/要求。
+  async wecruit(site, http) {
+    const { origin, suite, types } = site.wecruit || {};
+    if (!origin || !suite || !types || typeof types !== 'object') throw new Error('Wecruit config incomplete');
+    const q = '?iSaJAx=isAjax&request_locale=zh_CN';
+    const headers = { Referer: `${origin}/${suite}/pb/index.html` };
+    const jobs = [];
+    let officialTotal = 0;
+    for (const [recruitType, channel] of Object.entries(types)) {
+      const items = [];
+      let dataCount;
+      for (let page = 1; page <= MAX_PAGES; page++) {
+        const data = await http(`${origin}/wecruit/positionInfo/listPosition/${suite}${q}`, { method: 'POST', form: { isFrompb: 'true', recruitType, pageSize: 12, currentPage: page }, headers });
+        const form = data?.data?.pageForm;
+        if (!form || !Array.isArray(form.pageData) || !Number.isSafeInteger(form.totalPage)) throw new Error('Wecruit list shape changed');
+        dataCount = form.dataCount;
+        items.push(...form.pageData);
+        if (page >= form.totalPage || !form.pageData.length) break;
+      }
+      officialTotal += Number.isSafeInteger(dataCount) ? dataCount : items.length;
+      for (const item of items) {
+        const detail = (await http(`${origin}/wecruit/positionInfo/listPositionDetail/${suite}${q}`, { method: 'POST', form: { postId: item.postId, recruitType: '' }, headers }))?.data;
+        if (!detail || typeof detail !== 'object') throw new Error('Wecruit detail shape changed: ' + item.postId);
+        jobs.push(job({
+          id: item.postId, title: item.postName, city: item.workPlaceStr || (detail.workPlaceList || []).map(w => w.name).join('、'),
+          category: item.postTypeName, channels: [channel], url: `${origin}/${suite}/pb/posDetail.html?postId=${encodeURIComponent(item.postId)}&postType=${recruitType}`,
+          duty: detail.workContent, requirements: detail.serviceCondition
+        }));
+      }
+    }
+    return { jobs, officialTotal };
   }
 };
 
