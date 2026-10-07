@@ -266,12 +266,47 @@ function validTimestamp(value) {
   return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(value) && Number.isFinite(Date.parse(value));
 }
 
+const MAX_PARTS = 4, SHARD_THRESHOLD = 45 * 1024 * 1024, PART_TARGET = 30 * 1024 * 1024;
+function partFile(file, n) { return file.replace(/\.js$/, '.part' + n + '.js'); }
+const serialize = value => JSON.stringify(value).replace(/</g, '\\u003c');
+// 单文件超过阈值时把岗位切到 data/jobs.part1..4.js（GitHub单文件限制100MB），主文件保留元数据且jobs为空；
+// app.js加载后合并 ANDE_PARTS。未超阈值保持单文件；part文件总是成套写出/清理，避免旧片段残留。
+function writeData(dataFile, data, { threshold = SHARD_THRESHOLD, partTarget = PART_TARGET } = {}) {
+  const whole = 'globalThis.ANDE_DATA = ' + serialize(data) + ';\n';
+  const sharded = Buffer.byteLength(whole) > threshold;
+  const parts = [];
+  if (sharded) {
+    let current = [], size = 0;
+    for (const job of data.jobs) {
+      const length = Buffer.byteLength(serialize(job)) + 1;
+      if (current.length && size + length > partTarget) { parts.push(current); current = []; size = 0; }
+      current.push(job); size += length;
+    }
+    if (current.length) parts.push(current);
+    if (parts.length > MAX_PARTS) throw new Error('Data exceeds ' + MAX_PARTS + ' parts; raise MAX_PARTS and index.html script tags');
+  }
+  for (let n = 1; n <= MAX_PARTS; n++) {
+    const file = partFile(dataFile, n);
+    if (sharded) atomicWrite(file, 'globalThis.ANDE_PARTS=globalThis.ANDE_PARTS||[];globalThis.ANDE_PARTS.push(' + serialize(parts[n - 1] || []) + ');\n');
+    else if (fs.existsSync(file)) fs.unlinkSync(file);
+  }
+  atomicWrite(dataFile, sharded ? 'globalThis.ANDE_DATA = ' + serialize({ ...data, jobs: [] }) + ';\n' : whole);
+}
+
 function readPublished(file) {
   if (!fs.existsSync(file)) return { version: 1, legacy: false, notices: [], companies: [], sources: [], jobs: [] };
   const content = fs.readFileSync(file, 'utf8');
   const match = content.match(/^\s*globalThis\.ANDE_DATA\s*=\s*([\s\S]*?);?\s*$/);
   if (!match) throw new Error('Baseline must be globalThis.ANDE_DATA = <JSON>;');
   const data = JSON.parse(match[1]);
+  // 大数据集分片：岗位存于同目录 <name>.part1.js…，读取时按序合并（见 writeData）。
+  for (let n = 1; n <= MAX_PARTS; n++) {
+    const part = partFile(file, n);
+    if (!fs.existsSync(part)) break;
+    const partMatch = fs.readFileSync(part, 'utf8').match(/^globalThis\.ANDE_PARTS=globalThis\.ANDE_PARTS\|\|\[\];globalThis\.ANDE_PARTS\.push\(([\s\S]*)\);\s*$/);
+    if (!partMatch) throw new Error('Invalid data part: ' + part);
+    data.jobs = data.jobs.concat(JSON.parse(partMatch[1]));
+  }
   if (data.version !== 1 || typeof data.legacy !== 'boolean' || !Array.isArray(data.notices) || data.notices.some(n => typeof n !== 'string') || !Array.isArray(data.companies) || !Array.isArray(data.sources) || !Array.isArray(data.jobs)) throw new Error('Invalid baseline schema');
   const names = new Set(), keys = new Set(), ids = new Set();
   for (const company of data.companies) {
@@ -406,11 +441,11 @@ function publish({ outDir = OUT_DIR, dataFile = DATA_FILE, sites = loadSites(), 
   if (!legacy) notices.push('初版HTML遗留岗位不再保留；仅应用经过完整性核验的新采集版本，首次退出不代表官网下架。');
   if ([...sources.values()].some(source => source.status !== 'ready')) notices.push(legacy ? '部分来源失败、缺失或尚未验证，保留其已发布基线；详情见来源状态。' : '部分来源尚未取得新数据；更新失败时只保留上次已验证快照，没有该版本则暂不可用，不表示官网无岗位；详情见来源状态。');
   const data = { version: 1, legacy, notices, companies, sources: [...sources.values()], jobs };
-  atomicWrite(dataFile, 'globalThis.ANDE_DATA = ' + JSON.stringify(data).replace(/</g, '\\u003c') + ';\n');
+  writeData(dataFile, data);
   return { code: errors.length ? 1 : 0, written: true, updated: [...replacements.keys()], discardedLegacy: retired.size, errors, data };
 }
 
-module.exports = { loadSites, coverageFor, atomicWrite, normalizeJobs, normalizeDate, safeUrl, validTimestamp, readPublished, validateSnapshot, publish };
+module.exports = { writeData, loadSites, coverageFor, atomicWrite, normalizeJobs, normalizeDate, safeUrl, validTimestamp, readPublished, validateSnapshot, publish };
 if (require.main === module) {
   try {
     const keys = process.argv.slice(2);

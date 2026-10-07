@@ -2,6 +2,7 @@
 'use strict';
 // Native search UI. Data is published separately; keyword preferences never remove jobs.
 const DATA=globalThis.ANDE_DATA||{version:1,companies:[],sources:[],jobs:[],notices:['岗位数据暂不可用，请稍后再试。']};
+if(globalThis.ANDE_PARTS&&DATA.jobs)DATA.jobs=DATA.jobs.concat(...globalThis.ANDE_PARTS);
 const JOBS=DATA.jobs;
 // Display units only: keep source identity, raw company and all job facts untouched.
 const ALIBABA_UNITS=['阿里巴巴控股'];
