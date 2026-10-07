@@ -32,6 +32,18 @@ function coverageFor(site) {
   return 'registry-v1:' + JSON.stringify(scope);
 }
 
+// Latin names use their first letter; Chinese names use the pinyin initial via zh collation boundaries.
+function companyInitial(name) {
+  const first = String(name).trim()[0] || '';
+  if (/^[a-z]/i.test(first)) return first.toUpperCase();
+  if (!/[\u4e00-\u9fff]/.test(first)) return '#';
+  const bounds = [['A', '阿'], ['B', '八'], ['C', '嚓'], ['D', '搭'], ['E', '蛾'], ['F', '发'], ['G', '噶'], ['H', '哈'], ['J', '击'], ['K', '喀'], ['L', '垃'], ['M', '妈'], ['N', '拿'], ['O', '哦'], ['P', '啪'], ['Q', '期'], ['R', '然'], ['S', '撒'], ['T', '塌'], ['W', '挖'], ['X', '昔'], ['Y', '压'], ['Z', '匝']];
+  const collator = new Intl.Collator('zh-Hans-CN');
+  let letter = '#';
+  for (const [l, ch] of bounds) if (collator.compare(first, ch) >= 0) letter = l;
+  return letter;
+}
+
 function atomicWrite(file, content) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const temp = file + '.' + process.pid + '.tmp';
@@ -362,7 +374,7 @@ function publish({ outDir = OUT_DIR, dataFile = DATA_FILE, sites = loadSites(), 
   for (const replacement of replacements.values()) jobs.push(...replacement);
   const companies = baseline.companies.map(company => ({ name: company.name, initial: company.initial, aliases: company.aliases }));
   for (const source of sources.values()) if (!companies.some(company => company.name === source.company)) {
-    companies.push({ name: source.company, initial: /^[a-z]/i.test(source.company) ? source.company[0].toUpperCase() : '#', aliases: [] });
+    companies.push({ name: source.company, initial: companyInitial(source.company), aliases: [] });
   }
   const legacy = !discardLegacy && baseline.legacy && [...sources.values()].some(source => source.lastSuccess == null);
   const notices = ['数据范围以各注册来源的渠道、批次及接口参数为准；注册来源不等于公司全量，跨来源机会暂不合并。'];
