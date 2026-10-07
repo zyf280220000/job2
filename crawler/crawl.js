@@ -15,8 +15,10 @@ const ctrip = require('./lib/custom/ctrip_portal');
 const mihoyo = require('./lib/custom/mihoyo_portal');
 const shlab = require('./lib/custom/shlab_portal');
 const xiaomi = require('./lib/custom/xiaomi_portal');
+const portals = require('./lib/custom/table_portals');
 
 function adapterCommand(site, rawFile) {
+  if (portals.registered(site)) return { script: path.join(__dirname, 'lib', 'custom', 'table_portals.js'), args: [JSON.stringify(site), rawFile], timeout: 2400000 };
   if (ali.requiresVerification(site) && !ali.verifiedSource(site)) return null;
   if (meituan.requiresVerification(site) && !meituan.verifiedSource(site) && !meituanCampus.verifiedSource(site)) return null;
   if (meituanCampus.requiresVerification(site) && !meituanCampus.verifiedSource(site)) return null;
