@@ -266,7 +266,7 @@ function validTimestamp(value) {
   return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(value) && Number.isFinite(Date.parse(value));
 }
 
-const MAX_PARTS = 4, SHARD_THRESHOLD = 45 * 1024 * 1024, PART_TARGET = 30 * 1024 * 1024;
+const MAX_PARTS = 6, SHARD_THRESHOLD = 45 * 1024 * 1024, PART_TARGET = 30 * 1024 * 1024;
 function partFile(file, n) { return file.replace(/\.js$/, '.part' + n + '.js'); }
 const serialize = value => JSON.stringify(value).replace(/</g, '\\u003c');
 // 单文件超过阈值时把岗位切到 data/jobs.part1..4.js（GitHub单文件限制100MB），主文件保留元数据且jobs为空；
