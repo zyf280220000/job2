@@ -2,6 +2,7 @@
 // Never evaluates the baseline JavaScript, writes HTML, filters jobs or guesses coverage.
 'use strict';
 const fs = require('node:fs');
+const { createHash } = require('node:crypto');
 const path = require('node:path');
 const { normalizeJD } = require('./lib/jd-text');
 const feishu = require('./lib/feishu');
@@ -14,6 +15,7 @@ const ctrip = require('./lib/custom/ctrip_portal');
 const mihoyo = require('./lib/custom/mihoyo_portal');
 const shlab = require('./lib/custom/shlab_portal');
 const xiaomi = require('./lib/custom/xiaomi_portal');
+const portals = require('./lib/custom/table_portals');
 const OUT_DIR = path.join(__dirname, 'out');
 const DATA_FILE = path.join(__dirname, '..', 'data', 'jobs.js');
 const JOB_FIELDS = ['id', 'sourceKey', 'company', 'title', 'city', 'category', 'channels', 'employment', 'talentPlan', 'date', 'dateKind', 'url', 'duty', 'requirements', 'description', 'jdComplete', 'sourceStatus'];
@@ -24,12 +26,24 @@ function loadSites() {
 
 function coverageFor(site) {
   // Include original scope parameters/descriptions, not a claim of whole-company coverage.
-  const keys = ['key', 'ats', 'orgId', 'siteId', 'site', 'api', 'apiOrigin', 'url', 'category', 'track', 'batch', 'body', 'origin', 'detailApi', 'headers', 'aid', 'websitePath', 'subjectIdList', 'plain', 'matchKeyword', 'note', 'fetchDetails', 'listJD', 'adapter', 'portalType', 'portalPaths', 'categoryRootIds', 'categoryGroups', 'categoryTreeHash'];
+  const keys = ['key', 'ats', 'orgId', 'siteId', 'site', 'api', 'apiOrigin', 'url', 'category', 'track', 'batch', 'body', 'origin', 'detailApi', 'headers', 'aid', 'websitePath', 'subjectIdList', 'plain', 'matchKeyword', 'note', 'fetchDetails', 'listJD', 'adapter', 'fetcher', 'workday', 'wecruit', 'sf', 'portalType', 'portalPaths', 'categoryRootIds', 'categoryGroups', 'categoryTreeHash'];
   if (site.ats === 'moka') keys.push('linkTemplate');
   const scope = {};
   for (const key of keys.sort()) if (site[key] !== undefined) scope[key] = site[key];
   if (site.ats === 'beisen' && scope.category === undefined) scope.category = ['2'];
   return 'registry-v1:' + JSON.stringify(scope);
+}
+
+// Latin names use their first letter; Chinese names use the pinyin initial via zh collation boundaries.
+function companyInitial(name) {
+  const first = String(name).trim()[0] || '';
+  if (/^[a-z]/i.test(first)) return first.toUpperCase();
+  if (!/[\u4e00-\u9fff]/.test(first)) return '#';
+  const bounds = [['A', '阿'], ['B', '八'], ['C', '嚓'], ['D', '搭'], ['E', '蛾'], ['F', '发'], ['G', '噶'], ['H', '哈'], ['J', '击'], ['K', '喀'], ['L', '垃'], ['M', '妈'], ['N', '拿'], ['O', '哦'], ['P', '啪'], ['Q', '期'], ['R', '然'], ['S', '撒'], ['T', '塌'], ['W', '挖'], ['X', '昔'], ['Y', '压'], ['Z', '匝']];
+  const collator = new Intl.Collator('zh-Hans-CN');
+  let letter = '#';
+  for (const [l, ch] of bounds) if (collator.compare(first, ch) >= 0) letter = l;
+  return letter;
 }
 
 function atomicWrite(file, content) {
@@ -253,12 +267,74 @@ function validTimestamp(value) {
   return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(value) && Number.isFinite(Date.parse(value));
 }
 
+const MAX_PARTS = 14, PACK_THRESHOLD = 45 * 1024 * 1024, PACK_TARGET = 1.5 * 1024 * 1024;
+function partFile(file, n) { return file.replace(/\.js$/, '.part' + n + '.js'); } // 旧版分片，仅用于迁移读取/清理
+function packDir(file) { return path.join(path.dirname(file), path.basename(file, '.js') + '-packs'); }
+const serialize = value => JSON.stringify(value).replace(/</g, '\\u003c');
+const PACK_RE = /^\(globalThis\.ANDE_PACKS=globalThis\.ANDE_PACKS\|\|\{\}\)\["([^"]+)"\]=([\s\S]*);\s*$/;
+// 数据超过阈值时按来源分包（见SPEC §5“按需加载”）：主文件保留元数据、来源岗位数与分包清单且jobs为空；
+// 每包约PACK_TARGET字节，文件名含内容哈希，浏览器按所选单位下载。小数据保持单文件，旧包/旧分片总是清理。
+function writeData(dataFile, data, { threshold = PACK_THRESHOLD, packTarget = PACK_TARGET } = {}) {
+  const whole = 'globalThis.ANDE_DATA = ' + serialize(data) + ';\n';
+  const packed = Buffer.byteLength(whole) > threshold;
+  const dir = packDir(dataFile), keep = new Set();
+  let main = whole;
+  if (packed) {
+    const bySource = new Map(data.sources.map(source => [source.key, []]));
+    for (const job of data.jobs) { if (!bySource.has(job.sourceKey)) bySource.set(job.sourceKey, []); bySource.get(job.sourceKey).push(job); }
+    const company = new Map(data.sources.map(source => [source.key, source.company]));
+    const order = [...bySource.keys()].sort((x, y) => String(company.get(x)).localeCompare(String(company.get(y)), 'zh') || x.localeCompare(y));
+    const packs = [], sourceCounts = {};
+    let current = { sources: new Set(), jobs: [], size: 0 };
+    const flush = () => {
+      if (!current.jobs.length) return;
+      const body = serialize(current.jobs), hash = createHash('sha256').update(body).digest('hex').slice(0, 10), id = 'p' + String(packs.length + 1).padStart(4, '0');
+      const file = id + '-' + hash + '.js';
+      atomicWrite(path.join(dir, file), '(globalThis.ANDE_PACKS=globalThis.ANDE_PACKS||{})["' + id + '"]=' + body + ';\n');
+      keep.add(file);
+      packs.push({ id, file, sources: [...current.sources], count: current.jobs.length, bytes: Buffer.byteLength(body) });
+      current = { sources: new Set(), jobs: [], size: 0 };
+    };
+    for (const key of order) {
+      const jobs = bySource.get(key);
+      sourceCounts[key] = jobs.length;
+      for (const job of jobs) {
+        const length = Buffer.byteLength(serialize(job)) + 1;
+        if (current.jobs.length && current.size + length > packTarget) flush();
+        current.jobs.push(job); current.sources.add(key); current.size += length;
+      }
+    }
+    flush();
+    main = 'globalThis.ANDE_DATA = ' + serialize({ ...data, jobs: [], sourceCounts, packBase: path.basename(dir) + '/', packs }) + ';\n';
+  }
+  if (fs.existsSync(dir)) for (const file of fs.readdirSync(dir)) if (!keep.has(file)) fs.unlinkSync(path.join(dir, file));
+  for (let n = 1; n <= MAX_PARTS; n++) if (fs.existsSync(partFile(dataFile, n))) fs.unlinkSync(partFile(dataFile, n));
+  atomicWrite(dataFile, main);
+}
+
 function readPublished(file) {
   if (!fs.existsSync(file)) return { version: 1, legacy: false, notices: [], companies: [], sources: [], jobs: [] };
   const content = fs.readFileSync(file, 'utf8');
   const match = content.match(/^\s*globalThis\.ANDE_DATA\s*=\s*([\s\S]*?);?\s*$/);
   if (!match) throw new Error('Baseline must be globalThis.ANDE_DATA = <JSON>;');
   const data = JSON.parse(match[1]);
+  // 分包数据：按清单顺序合并（见 writeData）；兼容旧版 .partN.js 分片以便迁移。
+  if (Array.isArray(data.packs)) {
+    const jobs = [];
+    for (const pack of data.packs) {
+      const packMatch = fs.readFileSync(path.join(packDir(file), pack.file), 'utf8').match(PACK_RE);
+      if (!packMatch || packMatch[1] !== pack.id) throw new Error('Invalid data pack: ' + pack.file);
+      jobs.push(...JSON.parse(packMatch[2]));
+    }
+    data.jobs = jobs; delete data.packs; delete data.packBase; delete data.sourceCounts;
+  }
+  for (let n = 1; n <= MAX_PARTS; n++) {
+    const part = partFile(file, n);
+    if (!fs.existsSync(part)) break;
+    const partMatch = fs.readFileSync(part, 'utf8').match(/^globalThis\.ANDE_PARTS=globalThis\.ANDE_PARTS\|\|\[\];globalThis\.ANDE_PARTS\.push\(([\s\S]*)\);\s*$/);
+    if (!partMatch) throw new Error('Invalid data part: ' + part);
+    data.jobs = data.jobs.concat(JSON.parse(partMatch[1]));
+  }
   if (data.version !== 1 || typeof data.legacy !== 'boolean' || !Array.isArray(data.notices) || data.notices.some(n => typeof n !== 'string') || !Array.isArray(data.companies) || !Array.isArray(data.sources) || !Array.isArray(data.jobs)) throw new Error('Invalid baseline schema');
   const names = new Set(), keys = new Set(), ids = new Set();
   for (const company of data.companies) {
@@ -285,7 +361,7 @@ function readPublished(file) {
 
 function validateSnapshot(snapshot, status, site) {
   const coverage = coverageFor(site);
-  if (!['moka', 'beisen'].includes(site.ats) && !feishu.verifiedSource(site) && !ali.verifiedSource(site) && !meituan.verifiedSource(site) && !meituanCampus.verifiedSource(site) && !ctrip.verifiedSource(site) && !mihoyo.verifiedSource(site) && !shlab.verifiedSource(site) && !xiaomi.verifiedSource(site)) throw new Error('Adapter has not been verified for completeness');
+  if (!['moka', 'beisen'].includes(site.ats) && !portals.registered(site) && !feishu.verifiedSource(site) && !ali.verifiedSource(site) && !meituan.verifiedSource(site) && !meituanCampus.verifiedSource(site) && !ctrip.verifiedSource(site) && !mihoyo.verifiedSource(site) && !shlab.verifiedSource(site) && !xiaomi.verifiedSource(site)) throw new Error('Adapter has not been verified for completeness');
   if (!status || status.version !== 1 || status.key !== site.key || status.status !== 'ready' || typeof status.message !== 'string' || status.coverage !== coverage) throw new Error('Source is not ready for this registry coverage');
   if (!snapshot || snapshot.version !== 1 || snapshot.key !== site.key || snapshot.complete !== true || snapshot.coverage !== coverage || !validTimestamp(snapshot.completedAt) || snapshot.completedAt !== status.lastSuccess || !validTimestamp(status.lastAttempt) || Date.parse(status.lastAttempt) > Date.parse(snapshot.completedAt)) throw new Error('Snapshot metadata does not match the successful attempt');
   if (beisen.requiresVerification(site)) beisen.validateEvidence(snapshot.verification, snapshot.jobs, site);
@@ -362,7 +438,7 @@ function publish({ outDir = OUT_DIR, dataFile = DATA_FILE, sites = loadSites(), 
   for (const replacement of replacements.values()) jobs.push(...replacement);
   const companies = baseline.companies.map(company => ({ name: company.name, initial: company.initial, aliases: company.aliases }));
   for (const source of sources.values()) if (!companies.some(company => company.name === source.company)) {
-    companies.push({ name: source.company, initial: /^[a-z]/i.test(source.company) ? source.company[0].toUpperCase() : '#', aliases: [] });
+    companies.push({ name: source.company, initial: companyInitial(source.company), aliases: [] });
   }
   const legacy = !discardLegacy && baseline.legacy && [...sources.values()].some(source => source.lastSuccess == null);
   const notices = ['数据范围以各注册来源的渠道、批次及接口参数为准；注册来源不等于公司全量，跨来源机会暂不合并。'];
@@ -393,11 +469,11 @@ function publish({ outDir = OUT_DIR, dataFile = DATA_FILE, sites = loadSites(), 
   if (!legacy) notices.push('初版HTML遗留岗位不再保留；仅应用经过完整性核验的新采集版本，首次退出不代表官网下架。');
   if ([...sources.values()].some(source => source.status !== 'ready')) notices.push(legacy ? '部分来源失败、缺失或尚未验证，保留其已发布基线；详情见来源状态。' : '部分来源尚未取得新数据；更新失败时只保留上次已验证快照，没有该版本则暂不可用，不表示官网无岗位；详情见来源状态。');
   const data = { version: 1, legacy, notices, companies, sources: [...sources.values()], jobs };
-  atomicWrite(dataFile, 'globalThis.ANDE_DATA = ' + JSON.stringify(data).replace(/</g, '\\u003c') + ';\n');
+  writeData(dataFile, data);
   return { code: errors.length ? 1 : 0, written: true, updated: [...replacements.keys()], discardedLegacy: retired.size, errors, data };
 }
 
-module.exports = { loadSites, coverageFor, atomicWrite, normalizeJobs, normalizeDate, safeUrl, validTimestamp, readPublished, validateSnapshot, publish };
+module.exports = { writeData, loadSites, coverageFor, atomicWrite, normalizeJobs, normalizeDate, safeUrl, validTimestamp, readPublished, validateSnapshot, publish };
 if (require.main === module) {
   try {
     const keys = process.argv.slice(2);

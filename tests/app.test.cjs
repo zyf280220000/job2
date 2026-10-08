@@ -5,13 +5,14 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
 const root=path.join(__dirname,'..'),script=fs.readFileSync(path.join(root,'assets/app.js'),'utf8');
 const examplesScript=fs.readFileSync(path.join(root,'assets/example-words.js'),'utf8');
 const dataset=JSON.parse(fs.readFileSync(path.join(root,'data/jobs.js'),'utf8').replace(/^globalThis\.ANDE_DATA\s*=\s*/,'').replace(/;\s*$/,''));
+for(const pack of dataset.packs||[]){const m=fs.readFileSync(path.join(root,'data',dataset.packBase,pack.file),'utf8').match(/\]=([\s\S]*);\s*$/);dataset.jobs=dataset.jobs.concat(JSON.parse(m[1]));}
 const base={id:'unit-base',sourceKey:'unit',company:'字节跳动',city:'北京',title:'',duty:'',requirements:'',description:'',channels:['campus'],employment:'full-time',talentPlan:false,date:'2026-09-10',dateKind:'published',url:'https://example.test/job',jdComplete:true,category:''};
 const jobs=[{...base,id:'unit-finance',title:'财务',duty:'财务',requirements:'财务'}, {...base,id:'unit-sales',title:'销售',duty:'销售',requirements:'销售',channels:['social']}, {...base,id:'unit-unknown',description:'PYTHON 完整未分段正文',channels:[],employment:null,talentPlan:null,date:null,dateKind:null,jdComplete:false}];
 function load(saved,inputJobs=jobs){
  const storage=new Map(),elements=new Map();let writes=0;
  if(saved!==undefined)storage.set('ande.preferences.v1',JSON.stringify(saved));
  const element=key=>{if(!elements.has(key))elements.set(key,{value:'',innerHTML:'',textContent:'',hidden:false,setAttribute(){},focus(){},select(){}});return elements.get(key);};
- const ctx=vm.createContext({URL,ANDE_DATA:{...dataset,jobs:inputJobs},document:{addEventListener(){},querySelectorAll(){return []},getElementById:element,querySelector:element},localStorage:{getItem:k=>storage.get(k)??null,setItem:(k,v)=>{writes++;storage.set(k,v);}}});
+ const ctx=vm.createContext({URL,ANDE_DATA:{...dataset,packs:undefined,sourceCounts:undefined,jobs:inputJobs},document:{addEventListener(){},querySelectorAll(){return []},getElementById:element,querySelector:element},localStorage:{getItem:k=>storage.get(k)??null,setItem:(k,v)=>{writes++;storage.set(k,v);}}});
  vm.runInContext(examplesScript,ctx);
  vm.runInContext(script.replace(/\nrestorePreferences\(\);\nrender\(\);\s*$/,'')+'\nglobalThis.api={score,scoreText,collect,fillExample,restorePreferences,persistPreferences,matchesRecruitment,recruitmentLabels,wordEditor,reliableDate,dateHTML,applyHTML,detailHTML,rowHTML,hitText,sourceStatusHTML,jdNotice,unitName,COMPANIES,renderDirectory,renderSelection,companyEditor,footer,state,JOBS,EXAMPLE_KEYWORDS,EXAMPLE_DOWNRANK,RECRUITMENT_TYPES,message:()=>preferencesMessage};',ctx);
  return {...ctx.api,storage,element,writes:()=>writes};
