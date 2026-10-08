@@ -87,6 +87,8 @@ UUID Id与数字JobAdId是不同字段；全源双唯一性在投影前也复验
 
 ## 发布数据契约
 
+数据超过45MB时`publish.js`自动分包：`data/jobs.js`只含`companies/sources/notices`、`sourceCounts`及`packs`清单（`jobs`为空），岗位存于`data/jobs-packs/pNNNN-<hash>.js`（约1.5MB一包，格式`(globalThis.ANDE_PACKS=...)["pNNNN"]=[...]`）；页面按所选单位下载相关包。`readPublished`按清单合并并兼容旧`.partN.js`分片；小数据仍为单文件。以下字段契约对合并后的岗位不变。
+
 `../data/jobs.js` 为静态脚本：`globalThis.ANDE_DATA = <JSON>;`，文件及 Pages 直接可用，不做动态招聘请求。
 
 - 顶层：`version,legacy,notices,companies,sources,jobs`；目录来源独立于当前关键词结果。来源覆盖/数据缺失必须保留提示；初版遗留已退出，`legacy:false` 不意味着全部公司或来源已经接入。

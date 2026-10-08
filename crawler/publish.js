@@ -2,6 +2,7 @@
 // Never evaluates the baseline JavaScript, writes HTML, filters jobs or guesses coverage.
 'use strict';
 const fs = require('node:fs');
+const { createHash } = require('node:crypto');
 const path = require('node:path');
 const { normalizeJD } = require('./lib/jd-text');
 const feishu = require('./lib/feishu');
@@ -266,31 +267,49 @@ function validTimestamp(value) {
   return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(value) && Number.isFinite(Date.parse(value));
 }
 
-const MAX_PARTS = 14, SHARD_THRESHOLD = 45 * 1024 * 1024, PART_TARGET = 30 * 1024 * 1024;
-function partFile(file, n) { return file.replace(/\.js$/, '.part' + n + '.js'); }
+const MAX_PARTS = 14, PACK_THRESHOLD = 45 * 1024 * 1024, PACK_TARGET = 1.5 * 1024 * 1024;
+function partFile(file, n) { return file.replace(/\.js$/, '.part' + n + '.js'); } // 旧版分片，仅用于迁移读取/清理
+function packDir(file) { return path.join(path.dirname(file), path.basename(file, '.js') + '-packs'); }
 const serialize = value => JSON.stringify(value).replace(/</g, '\\u003c');
-// 单文件超过阈值时把岗位切到 data/jobs.part1..4.js（GitHub单文件限制100MB），主文件保留元数据且jobs为空；
-// app.js加载后合并 ANDE_PARTS。未超阈值保持单文件；part文件总是成套写出/清理，避免旧片段残留。
-function writeData(dataFile, data, { threshold = SHARD_THRESHOLD, partTarget = PART_TARGET } = {}) {
+const PACK_RE = /^\(globalThis\.ANDE_PACKS=globalThis\.ANDE_PACKS\|\|\{\}\)\["([^"]+)"\]=([\s\S]*);\s*$/;
+// 数据超过阈值时按来源分包（见SPEC §5“按需加载”）：主文件保留元数据、来源岗位数与分包清单且jobs为空；
+// 每包约PACK_TARGET字节，文件名含内容哈希，浏览器按所选单位下载。小数据保持单文件，旧包/旧分片总是清理。
+function writeData(dataFile, data, { threshold = PACK_THRESHOLD, packTarget = PACK_TARGET } = {}) {
   const whole = 'globalThis.ANDE_DATA = ' + serialize(data) + ';\n';
-  const sharded = Buffer.byteLength(whole) > threshold;
-  const parts = [];
-  if (sharded) {
-    let current = [], size = 0;
-    for (const job of data.jobs) {
-      const length = Buffer.byteLength(serialize(job)) + 1;
-      if (current.length && size + length > partTarget) { parts.push(current); current = []; size = 0; }
-      current.push(job); size += length;
+  const packed = Buffer.byteLength(whole) > threshold;
+  const dir = packDir(dataFile), keep = new Set();
+  let main = whole;
+  if (packed) {
+    const bySource = new Map(data.sources.map(source => [source.key, []]));
+    for (const job of data.jobs) { if (!bySource.has(job.sourceKey)) bySource.set(job.sourceKey, []); bySource.get(job.sourceKey).push(job); }
+    const company = new Map(data.sources.map(source => [source.key, source.company]));
+    const order = [...bySource.keys()].sort((x, y) => String(company.get(x)).localeCompare(String(company.get(y)), 'zh') || x.localeCompare(y));
+    const packs = [], sourceCounts = {};
+    let current = { sources: new Set(), jobs: [], size: 0 };
+    const flush = () => {
+      if (!current.jobs.length) return;
+      const body = serialize(current.jobs), hash = createHash('sha256').update(body).digest('hex').slice(0, 10), id = 'p' + String(packs.length + 1).padStart(4, '0');
+      const file = id + '-' + hash + '.js';
+      atomicWrite(path.join(dir, file), '(globalThis.ANDE_PACKS=globalThis.ANDE_PACKS||{})["' + id + '"]=' + body + ';\n');
+      keep.add(file);
+      packs.push({ id, file, sources: [...current.sources], count: current.jobs.length, bytes: Buffer.byteLength(body) });
+      current = { sources: new Set(), jobs: [], size: 0 };
+    };
+    for (const key of order) {
+      const jobs = bySource.get(key);
+      sourceCounts[key] = jobs.length;
+      for (const job of jobs) {
+        const length = Buffer.byteLength(serialize(job)) + 1;
+        if (current.jobs.length && current.size + length > packTarget) flush();
+        current.jobs.push(job); current.sources.add(key); current.size += length;
+      }
     }
-    if (current.length) parts.push(current);
-    if (parts.length > MAX_PARTS) throw new Error('Data exceeds ' + MAX_PARTS + ' parts; raise MAX_PARTS and index.html script tags');
+    flush();
+    main = 'globalThis.ANDE_DATA = ' + serialize({ ...data, jobs: [], sourceCounts, packBase: path.basename(dir) + '/', packs }) + ';\n';
   }
-  for (let n = 1; n <= MAX_PARTS; n++) {
-    const file = partFile(dataFile, n);
-    if (sharded) atomicWrite(file, 'globalThis.ANDE_PARTS=globalThis.ANDE_PARTS||[];globalThis.ANDE_PARTS.push(' + serialize(parts[n - 1] || []) + ');\n');
-    else if (fs.existsSync(file)) fs.unlinkSync(file);
-  }
-  atomicWrite(dataFile, sharded ? 'globalThis.ANDE_DATA = ' + serialize({ ...data, jobs: [] }) + ';\n' : whole);
+  if (fs.existsSync(dir)) for (const file of fs.readdirSync(dir)) if (!keep.has(file)) fs.unlinkSync(path.join(dir, file));
+  for (let n = 1; n <= MAX_PARTS; n++) if (fs.existsSync(partFile(dataFile, n))) fs.unlinkSync(partFile(dataFile, n));
+  atomicWrite(dataFile, main);
 }
 
 function readPublished(file) {
@@ -299,7 +318,16 @@ function readPublished(file) {
   const match = content.match(/^\s*globalThis\.ANDE_DATA\s*=\s*([\s\S]*?);?\s*$/);
   if (!match) throw new Error('Baseline must be globalThis.ANDE_DATA = <JSON>;');
   const data = JSON.parse(match[1]);
-  // 大数据集分片：岗位存于同目录 <name>.part1.js…，读取时按序合并（见 writeData）。
+  // 分包数据：按清单顺序合并（见 writeData）；兼容旧版 .partN.js 分片以便迁移。
+  if (Array.isArray(data.packs)) {
+    const jobs = [];
+    for (const pack of data.packs) {
+      const packMatch = fs.readFileSync(path.join(packDir(file), pack.file), 'utf8').match(PACK_RE);
+      if (!packMatch || packMatch[1] !== pack.id) throw new Error('Invalid data pack: ' + pack.file);
+      jobs.push(...JSON.parse(packMatch[2]));
+    }
+    data.jobs = jobs; delete data.packs; delete data.packBase; delete data.sourceCounts;
+  }
   for (let n = 1; n <= MAX_PARTS; n++) {
     const part = partFile(file, n);
     if (!fs.existsSync(part)) break;
