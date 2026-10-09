@@ -10,7 +10,7 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 function makeHttp({ fetchImpl = globalThis.fetch, delayMs = DELAY_MS, sleepImpl = sleep } = {}) {
   let last = 0;
-  return async function http(url, { method = 'GET', json, form, headers = {} } = {}) {
+  return async function http(url, { method = 'GET', json, form, headers = {}, preprocess } = {}) {
     const wait = last + delayMs - Date.now();
     if (wait > 0) await sleepImpl(wait);
     last = Date.now();
@@ -20,7 +20,7 @@ function makeHttp({ fetchImpl = globalThis.fetch, delayMs = DELAY_MS, sleepImpl 
     const response = await fetchImpl(url, init);
     if (response.status !== 200) throw new Error('HTTP ' + response.status + ' ' + url);
     const text = await response.text();
-    try { return JSON.parse(text); } catch { throw new Error('Non-JSON response ' + url); }
+    try { return JSON.parse(preprocess ? preprocess(text) : text); } catch { throw new Error('Non-JSON response ' + url); }
   };
 }
 
@@ -295,11 +295,13 @@ const FETCHERS = {
     const base = 'https://job.byd.com/portal/api/portal-api';
     const headers = { Referer: 'https://job.byd.com/portal/pc/' };
     const retry = async fn => { let last; for (let i = 0; i < 4; i++) { try { return await fn(); } catch (e) { last = e; await sleep(1500 * (i + 1)); } } throw last; };
+    // 官网岗位ID是19位整数，超过JS安全整数范围，必须按字符串读取，否则丢精度并被误判重复。
+    const preprocess = text => text.replace(/"(id|relatedId|relatedDetailId)":(\d{12,})/g, '"$1":"$2"');
     const rows = [];
     let officialTotal;
     for (let page = 0; page < 5000; page++) {
       const body = { positionTypeArr: [], positionProvinceArr: [], positionCityArr: [], positionOrgArr: [], vagueCondition: '', searchType: 1, zpType, pageNum: page, pageSize: 100 };
-      const response = await retry(() => http(base + '/position/queryList', { method: 'POST', json: body, headers }));
+      const response = await retry(() => http(base + '/position/queryList', { method: 'POST', json: body, headers, preprocess }));
       const data = response?.data;
       if (response?.code !== 0 || !Array.isArray(data?.data) || !Number.isSafeInteger(data.total)) throw new Error('BYD list shape changed');
       officialTotal = data.total;
@@ -308,7 +310,7 @@ const FETCHERS = {
     }
     const jobs = [];
     for (const row of rows) {
-      const detail = (await retry(() => http(base + '/position/queryDetail', { method: 'POST', json: { id: row.id }, headers })))?.data;
+      const detail = (await retry(() => http(base + '/position/queryDetail', { method: 'POST', json: { id: row.id }, headers, preprocess })))?.data;
       if (!detail || !Array.isArray(detail.tagDetailList)) throw new Error('BYD detail shape changed: ' + row.id);
       const part = name => detail.tagDetailList.filter(t => t.name === name).map(t => clean(t.detail)).join('\n');
       jobs.push(job({
