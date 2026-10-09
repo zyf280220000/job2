@@ -286,6 +286,39 @@ const FETCHERS = {
       if (response.data.length < 50) break;
     }
     return { jobs, officialTotal: jobs.length };
+  },
+  // 比亚迪官网（job.byd.com，匿名可读）：position/queryList 按 zpType 分页（社招00251/校园00252/技工00254），
+  // 逐岗 position/queryDetail 取「工作职责」「任职要求」。
+  async byd(site, http) {
+    const { zpType, channel, page: pagePath } = site.byd || {};
+    if (!zpType) throw new Error('BYD config incomplete');
+    const base = 'https://job.byd.com/portal/api/portal-api';
+    const headers = { Referer: 'https://job.byd.com/portal/pc/' };
+    const retry = async fn => { let last; for (let i = 0; i < 4; i++) { try { return await fn(); } catch (e) { last = e; await sleep(1500 * (i + 1)); } } throw last; };
+    const rows = [];
+    let officialTotal;
+    for (let page = 0; page < 5000; page++) {
+      const body = { positionTypeArr: [], positionProvinceArr: [], positionCityArr: [], positionOrgArr: [], vagueCondition: '', searchType: 1, zpType, pageNum: page, pageSize: 100 };
+      const response = await retry(() => http(base + '/position/queryList', { method: 'POST', json: body, headers }));
+      const data = response?.data;
+      if (response?.code !== 0 || !Array.isArray(data?.data) || !Number.isSafeInteger(data.total)) throw new Error('BYD list shape changed');
+      officialTotal = data.total;
+      rows.push(...data.data);
+      if (!data.data.length || rows.length >= officialTotal) break;
+    }
+    const jobs = [];
+    for (const row of rows) {
+      const detail = (await retry(() => http(base + '/position/queryDetail', { method: 'POST', json: { id: row.id }, headers })))?.data;
+      if (!detail || !Array.isArray(detail.tagDetailList)) throw new Error('BYD detail shape changed: ' + row.id);
+      const part = name => detail.tagDetailList.filter(t => t.name === name).map(t => clean(t.detail)).join('\n');
+      jobs.push(job({
+        id: row.id, title: row.positionName, city: [row.province, row.city].filter(Boolean).join('-'), category: '',
+        channels: channel ? [channel] : [], url: 'https://job.byd.com/portal/pc/#/' + (pagePath || 'social/socialMainPageSocial'),
+        duty: part('工作职责'), requirements: part('任职要求'),
+        description: [row.fatherOrgAliasName, row.orgAliasName].filter(Boolean).length ? '所属部门：' + [row.fatherOrgAliasName, row.orgAliasName].filter(Boolean).join(' / ') : ''
+      }));
+    }
+    return { jobs, officialTotal };
   }
 };
 
