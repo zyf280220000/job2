@@ -309,9 +309,12 @@ const FETCHERS = {
       if (!data.data.length || rows.length >= officialTotal) break;
     }
     const jobs = [];
+    let detailFailures = 0;
     for (const row of rows) {
-      const detail = (await retry(() => http(base + '/position/queryDetail', { method: 'POST', json: { id: row.id }, headers, preprocess })))?.data;
-      if (!detail || !Array.isArray(detail.tagDetailList)) throw new Error('BYD detail shape changed: ' + row.id);
+      // SPEC §4.3：个别详情失败不拖垮整源，保留标题/城市/官网链接，正文留空并计数。
+      let detail = null;
+      try { detail = (await retry(() => http(base + '/position/queryDetail', { method: 'POST', json: { id: row.id }, headers, preprocess })))?.data; } catch { detail = null; }
+      if (!detail || !Array.isArray(detail.tagDetailList)) { detail = { tagDetailList: [] }; detailFailures++; }
       const part = name => detail.tagDetailList.filter(t => t.name === name).map(t => clean(t.detail)).join('\n');
       jobs.push(job({
         id: row.id, title: row.positionName, city: [row.province, row.city].filter(Boolean).join('-'), category: '',
@@ -320,6 +323,7 @@ const FETCHERS = {
         description: [row.fatherOrgAliasName, row.orgAliasName].filter(Boolean).length ? '所属部门：' + [row.fatherOrgAliasName, row.orgAliasName].filter(Boolean).join(' / ') : ''
       }));
     }
+    if (detailFailures > rows.length * 0.2) throw new Error('BYD detail failed for too many jobs: ' + detailFailures + '/' + rows.length);
     return { jobs, officialTotal };
   }
 };
