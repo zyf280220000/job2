@@ -299,8 +299,9 @@ const FETCHERS = {
     const preprocess = text => text.replace(/"(id|relatedId|relatedDetailId)":(\d{12,})/g, '"$1":"$2"');
     const rows = [];
     let officialTotal;
-    for (let page = 0; page < 5000; page++) {
-      const body = { positionTypeArr: [], positionProvinceArr: [], positionCityArr: [], positionOrgArr: [], vagueCondition: '', searchType: 1, zpType, pageNum: page, pageSize: 100 };
+    // 注意：该接口的 pageNum 实际是「起始行偏移」（0,100,200…），按页码 0,1,2 传会大量重复。
+    for (let loop = 0; loop < 5000; loop++) {
+      const body = { positionTypeArr: [], positionProvinceArr: [], positionCityArr: [], positionOrgArr: [], vagueCondition: '', searchType: 1, zpType, pageNum: rows.length, pageSize: 100 };
       const response = await retry(() => http(base + '/position/queryList', { method: 'POST', json: body, headers, preprocess }));
       const data = response?.data;
       if (response?.code !== 0 || !Array.isArray(data?.data) || !Number.isSafeInteger(data.total)) throw new Error('BYD list shape changed');
@@ -344,6 +345,8 @@ async function fetchAll(site, options = {}) {
     seen.add(item.id);
     jobs.push(item);
   }
+  // 翻页异常保护：大量重复ID通常说明分页参数理解错误（如pageNum实为偏移），宁可失败也不发布缺岗数据。
+  if (all.length - jobs.length > Math.max(5, all.length * 0.05)) throw new Error('Too many duplicate official IDs (' + (all.length - jobs.length) + '/' + all.length + '); pagination likely wrong');
   return { complete: true, total: jobs.length, officialTotal: officialTotal ?? null, duplicatesDropped: all.length - jobs.length, jobs };
 }
 

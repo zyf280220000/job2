@@ -77,3 +77,10 @@ test('完整链路：crawl 晋升快照后 publisher 发布，非目标岗位与
   const rows = api.normalizeJobs(JSON.parse(fs.readFileSync(path.join(dir, s.key + '_snapshot.json'), 'utf8')).jobs, s);
   a.equal(rows[0].id, s.key + ':a'); a.equal(rows[0].jdComplete, true); a.deepEqual(rows[0].channels, ['campus']);
 });
+
+test('大量重复官方ID说明分页异常，整源拒绝而不是静默去重', async () => {
+  const item = id => ({ positionId: id, publicationName: 'T' + id, workingPlace: '深圳', postDuties: '职责', qualification: '要求' });
+  const rows = Array.from({ length: 40 }, (_, i) => item('same' + (i % 3)));
+  const http = portals.makeHttp({ ...noWait, fetchImpl: fakeFetch({ '/position/list': { total: 40, info: { totalPage: 1 }, data: rows } }) });
+  await a.rejects(() => portals.fetchAll(site('midea_social'), { http }), /duplicate official IDs/);
+});
