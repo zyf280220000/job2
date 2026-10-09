@@ -252,6 +252,40 @@ const FETCHERS = {
       if (!body.data.length || jobs.length >= officialTotal) break;
     }
     return { jobs, officialTotal };
+  },
+  // 安克创新官网（飞书开放接口代理）：getJobPosts 分页，列表自带完整岗位描述。
+  async anker(site, http) {
+    const base = 'https://open.anker-in.com/service/lark/openapi/getJobPosts/6962795203808168199';
+    const headers = { Referer: 'https://career.anker.com.cn/' };
+    const jobs = [];
+    let officialTotal;
+    const text = value => { try { const o = JSON.parse(value); return o.zh_cn || o.en_us || ''; } catch { return str(value); } };
+    for (let page = 1; page <= MAX_PAGES; page++) {
+      const response = await http(`${base}?page=${page}&size=50`, { method: 'POST', json: {}, headers });
+      if (response?.code !== 200 || !Array.isArray(response.data) || !Number.isSafeInteger(response.total)) throw new Error('Anker list shape changed');
+      officialTotal = response.total;
+      for (const item of response.data) {
+        const address = (() => { try { return JSON.parse(item.address).map(a => a.zh_cn || a.en_us).filter(Boolean).join('/'); } catch { return str(item.address); } })();
+        const type = text(item.jobRecruitmentType);
+        jobs.push(job({ id: item.id, title: item.title, city: address, category: text(item.jobFunction), channels: [], employment: type === '实习' ? 'internship' : type === '全职' ? 'full-time' : null, url: 'https://career.anker.com.cn/', duty: item.description }));
+      }
+      if (!response.data.length || page * 50 >= officialTotal) break;
+    }
+    return { jobs, officialTotal };
+  },
+  // 中信银行官网移动入口：position/all 分页（channelCate=02校招），列表仅岗位名/地点/分行/批次，无JD。
+  async citic_campus(site, http) {
+    const headers = { Referer: 'https://jobwx.citicbank.com/' };
+    const jobs = [];
+    for (let page = 1; page <= MAX_PAGES; page++) {
+      const response = await http(`https://jobwx.citicbank.com/recruitmobile/api/position/all?pageNum=${page}&pageSize=50&channelCate=02`, { headers });
+      if (response?.success !== true || !Array.isArray(response.data)) throw new Error('CITIC list shape changed');
+      for (const item of response.data) {
+        jobs.push(job({ id: item.id, title: item.postname, city: item.workaddr, category: item.content, channels: ['campus'], employment: item.GZ === '全职' ? 'full-time' : null, url: 'https://jobwx.citicbank.com/', description: [item.station, item.XLMC && '学历：' + item.XLMC].filter(Boolean).join('\n') }));
+      }
+      if (response.data.length < 50) break;
+    }
+    return { jobs, officialTotal: jobs.length };
   }
 };
 
