@@ -214,6 +214,44 @@ const FETCHERS = {
       }));
     }
     return { jobs, officialTotal: mine.length };
+  },
+  // 拼多多校招官网：recruit/position/list 分页（官网固定每页10），列表自带岗位职责。
+  async pdd_campus(site, http) {
+    const url = 'https://careers.pddglobalhr.com/api/careers/api/recruit/position/list';
+    const headers = { Referer: 'https://careers.pddglobalhr.com/campus/grad' };
+    const jobs = [];
+    let officialTotal;
+    for (let page = 1; page <= MAX_PAGES; page++) {
+      const response = await http(url, { method: 'POST', json: { page, pageSize: 10, t: null }, headers });
+      const result = response?.result;
+      if (response?.success !== true || !Array.isArray(result?.list) || !Number.isFinite(Number(result.total))) throw new Error('PDD list shape changed');
+      officialTotal = Number(result.total);
+      for (const item of result.list) {
+        jobs.push(job({ id: item.id, title: item.name, city: item.workLocationName || item.workLocation, category: item.jobName, channels: ['campus'], url: 'https://careers.pddglobalhr.com/campus/grad', duty: item.jobDuty, requirements: item.jobRequire || item.jobRequirement }));
+      }
+      if (!result.list.length || page * 10 >= officialTotal) break;
+    }
+    return { jobs, officialTotal };
+  },
+  // 招商银行校招官网：job/getList 分页；列表仅有岗位名、分行、地点、截止日，官网详情接口未适配，正文留空。
+  async cmb_campus(site, http) {
+    const typeId = site.cmb?.recruitmentTypeId;
+    if (!typeId) throw new Error('CMB config incomplete');
+    const url = 'https://career.cmbchina.com/api/campusRecruitmentWebsite/job/getList';
+    const headers = { Referer: 'https://career.cmbchina.com/' };
+    const jobs = [];
+    let officialTotal;
+    for (let page = 1; page <= MAX_PAGES; page++) {
+      const response = await http(url, { method: 'POST', json: { orgIdList: [], keywords: '', locationIdList: [], pageIndex: page, pageSize: 50, recruitmentTypeId: typeId, jobTypeIdList: [] }, headers });
+      const body = response?.body;
+      if (response?.returnCode !== 'SUC0000' || !Array.isArray(body?.data) || !Number.isSafeInteger(body.total)) throw new Error('CMB list shape changed');
+      officialTotal = body.total;
+      for (const item of body.data) {
+        jobs.push(job({ id: item.publishGID, title: item.jobDisplay, city: item.locationName, category: item.branchCodeName, channels: ['campus'], url: 'https://career.cmbchina.com/positionlist/' + typeId }));
+      }
+      if (!body.data.length || jobs.length >= officialTotal) break;
+    }
+    return { jobs, officialTotal };
   }
 };
 
